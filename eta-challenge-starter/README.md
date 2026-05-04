@@ -17,9 +17,9 @@ by `predict.py` is stored in `model.pkl`.
 
 ## Final Dev Score
 
-- `python grade.py` 50k Dev sample MAE: **257.4 seconds**
-- Full local Dev MAE from `train.py`: **253.8 seconds**
-- Docker 50k run: **257.4 seconds**, **439s wall time**, image size **966MB**
+- `python grade.py` 50k Dev sample MAE: **253.3 seconds**
+- Full local Dev MAE from `train.py`: **250.8 seconds**
+- Docker image size: **966MB**
 
 Starter reference from the challenge README: naive GBT baseline is about
 `351s` Dev / `367s` Eval, and a simple zone-pair lookup is about `300s` Dev.
@@ -28,14 +28,16 @@ Starter reference from the challenge README: naive GBT baseline is about
 
 The core model treats ETA as a structured tabular problem rather than a raw
 zone-id regression. I build full-year 2023 priors for route duration, observed
-distance, speed, demand density, fare-regime likelihood, and route class, then
-train a scikit-learn `HistGradientBoostingRegressor` with quantile loss
-(`quantile=0.5`) because Gobblecube scores MAE and the conditional median is
-the right target for absolute error.
+distance, speed, demand density, fare-regime likelihood, and route class. I
+started with quantile loss because Gobblecube scores MAE, but the ablation loop
+found that a squared-error `HistGradientBoostingRegressor` on the cleaned
+feature stack scored better on Dev. The shipped model uses the measured winner,
+not the initial theory.
 
 Main pieces:
 
-- **MAE-aligned objective:** quantile/median regression instead of default MSE.
+- **Measured objective choice:** quantile, absolute-error, and squared-error
+  losses were all tested; squared-error won on Dev for the final feature stack.
 - **Empirical Bayes route priors:** zone-pair and zone-pair-hour medians shrink
   toward speed-regime cluster means, not the global average.
 - **Observed distance/speed:** `trip_distance` and `RatecodeID` are used only
@@ -52,15 +54,16 @@ Main pieces:
   zone shapefile.
 - **Recency weighting:** late-2023 rows receive more weight than early-2023
   rows, while older rows still help rare routes.
-- **Training target winsorization:** duration is capped at p99.5 per route
-  class during training to reduce meter-left-running style label noise.
+- **Target cleaning tested, not assumed:** p99.5 route-class winsorization was
+  implemented and tested; the final model keeps the raw cleaned target because
+  the no-cap experiment won Dev MAE.
 - **Passenger count skepticism:** passenger count is retained for cleaning but
   deliberately excluded from model features because it is driver-entered and
   default-heavy.
 
-The final prediction is a small blend of the quantile model and the
-zone-pair-hour prior. The blend weight is selected on Dev; the current model
-uses `0.90 * model + 0.10 * prior`.
+The final prediction uses the squared-error model directly, except same-zone
+trips where the dedicated same-zone model is lightly blended with the
+zone-pair-hour prior. Blend weights are selected on Dev.
 
 ## Ablations
 
@@ -71,12 +74,16 @@ Measured on full local Dev inside `train.py`:
 | Pair median prior | 299.9s |
 | Distance / speed physics prior | 300.4s |
 | Pair-hour shrinkage prior | 273.8s |
-| Quantile model only | 254.0s |
-| Final blend | **253.8s** |
+| Initial 3M-row quantile blend | 253.8s |
+| 1M-row quantile control | 252.1s |
+| 1M-row squared-error | 251.5s |
+| 1M-row squared-error, no target cap | 251.2s |
+| Final 1M-row squared-error, no target cap, 340 iters | **250.8s** |
 
-One larger training run with 6M weighted rows and 520 iterations scored
-`255.1s`, worse than the selected 3M-row / 420-iteration model. I kept the
-smaller model because it generalized better on Dev and is faster to reproduce.
+The metric-driven loop is in `autoresearch.py`, with results in
+`research_log.csv` and per-run JSON files in `research_runs/`. A larger 2M-row
+variant and a 6M-row earlier run both scored worse than the final 1M-row model,
+so the smaller model is intentional.
 
 ## Diagnostics
 
@@ -84,14 +91,14 @@ Segmented MAE from the selected model:
 
 | Segment | MAE |
 |---|---:|
-| Overall | 253.8s |
-| Same-zone | 207.3s |
-| Manhattan internal | 218.6s |
-| Airport route | 440.5s |
-| Manhattan to/from outer borough | 407.2s |
-| Outer-to-outer | 534.1s |
-| Rush hour | 268.8s |
-| Late night | 192.3s |
+| Overall | 250.8s |
+| Same-zone | 209.1s |
+| Manhattan internal | 216.3s |
+| Airport route | 428.5s |
+| Manhattan to/from outer borough | 405.9s |
+| Outer-to-outer | 537.4s |
+| Rush hour | 264.8s |
+| Late night | 194.9s |
 
 Residual analysis shows remaining error is concentrated in afternoon peak
 hours, airport routes, outer-borough routes, and dropoffs into zone `265`
@@ -103,6 +110,10 @@ blindly adding more global features.
 - Training on a larger 6M-row weighted sample worsened Dev MAE, likely because
   the tree started fitting older/noisier regimes instead of the cleaner
   recency-weighted signal.
+- The metric argument for quantile/absolute-error loss was directionally
+  sensible but empirically wrong here. Squared-error scored better once the
+  target, priors, and features were in place.
+- p99.5 target winsorization also lost to training on the raw cleaned target.
 - A pure distance/speed physics prior was not enough by itself. Observed
   distance is useful as a feature, but route duration still needs historical
   priors and a flexible model.
@@ -112,10 +123,11 @@ blindly adding more global features.
 ## AI Tooling
 
 I used Codex as an implementation partner for repo reading, feature-pipeline
-construction, and verification. The useful loop was: propose one modeling idea,
-encode it in `train.py`, run `grade.py`/Docker, compare MAE, and keep only the
-version that improved or clarified the result. The tooling was less useful for
-deciding what mattered; the score and residual tables made those decisions.
+construction, verification, and the ablation loop. The useful loop was:
+propose one modeling change, encode it in `train.py`, run `autoresearch.py`,
+compare Dev MAE, and promote only if the metric improved. The loop overturned
+two plausible assumptions: quantile loss and winsorization both sounded right,
+but squared-error with no target cap scored better.
 
 ## Reproduce
 
@@ -127,8 +139,16 @@ pip install -r requirements.txt
 # Downloads public 2023 TLC yellow taxi parquet files and builds train/dev.
 python data/download_data.py
 
-# Trains model.pkl and writes metrics.json.
-python train.py --sample-n 3000000 --max-iter 420
+# Reproduce the final promoted model.pkl and metrics.json.
+python train.py \
+  --experiment-name squared_error_no_cap_1m_340 \
+  --sample-n 1000000 \
+  --max-iter 340 \
+  --loss squared_error \
+  --target-cap-quantile 1.0
+
+# Optional: rerun the recorded ablation loop.
+python autoresearch.py --promote
 
 # Local contract and scoring checks.
 python -m pytest tests/

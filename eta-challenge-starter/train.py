@@ -4,7 +4,7 @@
 This is intentionally a practical tabular pipeline, not a black box:
 
 * label-side priors are built only from 2023 training data
-* the final tree uses quantile loss because Gobblecube scores MAE
+* loss function, target capping, and recency choices are ablated by metric
 * recent rows get larger sample weights to reduce 2023 -> 2024 drift
 * same-zone trips are modeled separately because route distance collapses
 """
@@ -44,6 +44,42 @@ ZONE_SHAPE_URL = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zones.zip"
 PAIR_SHRINK_K = 80.0
 PAIR_HOUR_SHRINK_K = 35.0
 N_CLUSTERS = 8
+
+FEATURE_GROUPS = {
+    "calendar": [
+        "is_federal_holiday",
+        "is_holiday_eve",
+        "is_december_holiday_period",
+        "is_nye_period",
+    ],
+    "density": ["pickup_density_15m", "dropoff_density_15m"],
+    "ratecode_priors": ["prob_rate_jfk", "prob_rate_newark", "prob_rate_negotiated"],
+    "neighbor": ["neighbor_pickup_hour_duration", "neighbor_dropoff_hour_duration"],
+    "physics": ["distance_prior_miles", "speed_prior_mph", "physics_duration"],
+    "cyclical_time": [
+        "hour_sin",
+        "hour_cos",
+        "dow_sin",
+        "dow_cos",
+        "doy_sin",
+        "doy_cos",
+        "qhour_sin",
+        "qhour_cos",
+    ],
+    "structure": [
+        "same_zone",
+        "airport_route",
+        "pickup_airport",
+        "dropoff_airport",
+        "pickup_cbd",
+        "dropoff_cbd",
+        "touches_cbd",
+        "pickup_manhattan",
+        "dropoff_manhattan",
+        "route_class",
+    ],
+    "cluster": ["cluster_hour_duration"],
+}
 
 
 def _download(url: str, path: Path) -> Path:
@@ -162,10 +198,12 @@ def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
     return float(values[np.searchsorted(np.cumsum(weights), cutoff)])
 
 
-def add_recency_weights(df: pd.DataFrame) -> np.ndarray:
+def add_recency_weights(df: pd.DataFrame, half_life_days: float = 90.0, floor: float = 0.30) -> np.ndarray:
     max_ts = df["_ts"].max()
     age_days = (max_ts - df["_ts"]).dt.days.to_numpy(dtype=np.float32)
-    return (0.30 + 0.70 * np.exp(-age_days / 90.0)).astype(np.float32)
+    if half_life_days <= 0:
+        return np.ones(len(df), dtype=np.float32)
+    return (floor + (1.0 - floor) * np.exp(-age_days / half_life_days)).astype(np.float32)
 
 
 def valid_speed_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -180,10 +218,13 @@ def valid_speed_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def route_class_caps(train: pd.DataFrame) -> np.ndarray:
+def route_class_caps(train: pd.DataFrame, quantile: float) -> np.ndarray:
     caps = np.full(N_ROUTE_CLASSES, np.nan, dtype=np.float32)
-    q = train.groupby("route_class")["duration_seconds"].quantile(0.995)
-    global_cap = float(train["duration_seconds"].quantile(0.995))
+    if quantile >= 1.0:
+        caps.fill(float(train["duration_seconds"].max()))
+        return caps
+    q = train.groupby("route_class")["duration_seconds"].quantile(quantile)
+    global_cap = float(train["duration_seconds"].quantile(quantile))
     for cls in range(N_ROUTE_CLASSES):
         caps[cls] = float(q.get(cls, global_cap))
     return caps
@@ -513,17 +554,27 @@ def build_feature_frame(df: pd.DataFrame, artifacts: dict) -> pd.DataFrame:
     return X.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 
-def train_model(X: pd.DataFrame, y: np.ndarray, weights: np.ndarray, max_iter: int) -> HistGradientBoostingRegressor:
+def train_model(
+    X: pd.DataFrame,
+    y: np.ndarray,
+    weights: np.ndarray,
+    max_iter: int,
+    loss: str,
+) -> HistGradientBoostingRegressor:
+    kwargs = {
+        "loss": loss,
+        "max_iter": max_iter,
+        "learning_rate": 0.055,
+        "max_leaf_nodes": 63,
+        "min_samples_leaf": 80,
+        "l2_regularization": 0.02,
+        "validation_fraction": None,
+        "random_state": 42,
+    }
+    if loss == "quantile":
+        kwargs["quantile"] = 0.5
     model = HistGradientBoostingRegressor(
-        loss="quantile",
-        quantile=0.5,
-        max_iter=max_iter,
-        learning_rate=0.055,
-        max_leaf_nodes=63,
-        min_samples_leaf=80,
-        l2_regularization=0.02,
-        validation_fraction=None,
-        random_state=42,
+        **kwargs,
     )
     model.fit(X.to_numpy(np.float32), y, sample_weight=weights)
     return model
@@ -537,6 +588,20 @@ def choose_training_rows(weights: np.ndarray, sample_n: int, seed: int = 42) -> 
     probs = weights.astype(np.float64)
     probs = probs / probs.sum()
     return rng.choice(n, size=sample_n, replace=False, p=probs)
+
+
+def disable_feature_groups(X: pd.DataFrame, groups: list[str]) -> pd.DataFrame:
+    if not groups:
+        return X
+    out = X.copy()
+    for group in groups:
+        names = FEATURE_GROUPS.get(group)
+        if names is None:
+            raise SystemExit(f"Unknown feature group {group!r}. Known: {sorted(FEATURE_GROUPS)}")
+        for name in names:
+            if name in out.columns:
+                out[name] = 0.0
+    return out
 
 
 def mae(y_true: np.ndarray, pred: np.ndarray) -> float:
@@ -594,6 +659,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sample-n", type=int, default=3_000_000)
     parser.add_argument("--max-iter", type=int, default=420)
+    parser.add_argument("--loss", choices=["quantile", "squared_error", "absolute_error"], default="quantile")
+    parser.add_argument("--target-cap-quantile", type=float, default=0.995)
+    parser.add_argument("--recency-half-life-days", type=float, default=90.0)
+    parser.add_argument("--recency-floor", type=float, default=0.30)
+    parser.add_argument("--disable-feature-group", action="append", default=[])
+    parser.add_argument("--no-same-zone-model", action="store_true")
+    parser.add_argument("--experiment-name", default="final")
+    parser.add_argument("--model-path", type=Path, default=MODEL_PATH)
+    parser.add_argument("--metrics-path", type=Path, default=METRICS_PATH)
+    parser.add_argument("--no-save-model", action="store_true")
     args = parser.parse_args()
 
     for path in (DATA_DIR / "train.parquet", DATA_DIR / "dev.parquet"):
@@ -611,10 +686,10 @@ def main() -> None:
     dev = add_time_and_route(dev, meta)
 
     print("Applying target winsorization and recency weights...")
-    caps = route_class_caps(train)
+    caps = route_class_caps(train, args.target_cap_quantile)
     y_train_raw = train["duration_seconds"].to_numpy(np.float32)
     y_train = np.minimum(y_train_raw, caps[train["route_class"].to_numpy(np.int8)])
-    weights = add_recency_weights(train)
+    weights = add_recency_weights(train, args.recency_half_life_days, args.recency_floor)
 
     artifacts = build_artifacts(train, meta)
     artifacts["route_class_caps"] = caps
@@ -623,14 +698,16 @@ def main() -> None:
     print("Featurizing sampled train rows and full dev...")
     X_train = build_feature_frame(train.iloc[rows].reset_index(drop=True), artifacts)
     X_dev = build_feature_frame(dev, artifacts)
+    X_train = disable_feature_groups(X_train, args.disable_feature_group)
+    X_dev = disable_feature_groups(X_dev, args.disable_feature_group)
     y_dev = dev["duration_seconds"].to_numpy(np.float32)
 
-    print(f"Training quantile model on {len(rows):,} rows...")
-    model = train_model(X_train, y_train[rows], weights[rows], args.max_iter)
+    print(f"Training {args.loss} model on {len(rows):,} rows...")
+    model = train_model(X_train, y_train[rows], weights[rows], args.max_iter, args.loss)
 
     same_model = None
     same_mask_train = (train["pickup_zone"].to_numpy() == train["dropoff_zone"].to_numpy())
-    if same_mask_train.sum() >= 5000:
+    if not args.no_same_zone_model and same_mask_train.sum() >= 5000:
         same_rows_all = np.where(same_mask_train)[0]
         same_rows = same_rows_all[:]
         if len(same_rows) > 600_000:
@@ -638,7 +715,8 @@ def main() -> None:
             same_rows = same_rows_all[same_rows]
         print(f"Training same-zone model on {len(same_rows):,} rows...")
         X_same = build_feature_frame(train.iloc[same_rows].reset_index(drop=True), artifacts)
-        same_model = train_model(X_same, y_train[same_rows], weights[same_rows], 260)
+        X_same = disable_feature_groups(X_same, args.disable_feature_group)
+        same_model = train_model(X_same, y_train[same_rows], weights[same_rows], 260, args.loss)
 
     X_dev_np = X_dev.to_numpy(np.float32)
     model_pred = model.predict(X_dev_np)
@@ -655,6 +733,7 @@ def main() -> None:
         final_pred[same_mask_dev] = same_blend_w * same_pred + (1.0 - same_blend_w) * same_prior
 
     metrics = {
+        "experiment_name": args.experiment_name,
         "dev_mae": mae(y_dev, final_pred),
         "model_only_mae": mae(y_dev, model_pred),
         "pair_hour_prior_mae": mae(y_dev, prior),
@@ -666,6 +745,12 @@ def main() -> None:
         "residual_summary": residual_summary(dev, y_dev, final_pred),
         "train_rows": int(len(train)),
         "model_train_rows": int(len(rows)),
+        "loss": args.loss,
+        "target_cap_quantile": args.target_cap_quantile,
+        "recency_half_life_days": args.recency_half_life_days,
+        "recency_floor": args.recency_floor,
+        "disabled_feature_groups": args.disable_feature_group,
+        "same_zone_model_enabled": same_model is not None,
         "elapsed_seconds": round(time.time() - t0, 1),
     }
     print(json.dumps(metrics, indent=2))
@@ -678,11 +763,14 @@ def main() -> None:
         "artifacts": artifacts,
         "metrics": metrics,
     }
-    with open(MODEL_PATH, "wb") as f:
-        pickle.dump(bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
-    METRICS_PATH.write_text(json.dumps(metrics, indent=2) + "\n")
-    print(f"Saved {MODEL_PATH}")
-    print(f"Saved {METRICS_PATH}")
+    args.metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    args.metrics_path.write_text(json.dumps(metrics, indent=2) + "\n")
+    print(f"Saved {args.metrics_path}")
+    if not args.no_save_model:
+        args.model_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.model_path, "wb") as f:
+            pickle.dump(bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"Saved {args.model_path}")
 
 
 if __name__ == "__main__":

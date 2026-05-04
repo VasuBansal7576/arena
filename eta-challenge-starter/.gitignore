@@ -12,3 +12,6 @@ data/sample_1M.parquet
 
 # Docker cache
 .docker_cache/
+
+# Autoresearch artifacts
+research_runs/*.pkl
