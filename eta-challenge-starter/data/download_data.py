@@ -6,6 +6,11 @@ Produces:
     data/dev.parquet         -- last 2 weeks of 2023, ~1M trips (for local grading)
     data/sample_1M.parquet   -- 1M-row subset of train for fast iteration
 
+The submission interface still only receives pickup/dropoff zone,
+requested_at, and passenger_count. We retain trip_distance and ratecode_id in
+the training parquets so offline feature builders can derive route-distance,
+speed, and fare-regime priors without using unavailable inference fields.
+
 The held-out Eval set (a 2024 slice) is kept by Gobblecube and never distributed.
 
 Takes ~5 minutes on a fast connection, ~20 minutes on a slow one.
@@ -51,6 +56,8 @@ def clean(paths: list[Path]) -> pd.DataFrame:
                 "PULocationID",
                 "DOLocationID",
                 "passenger_count",
+                "trip_distance",
+                "RatecodeID",
             ],
         )
         frames.append(df)
@@ -65,6 +72,8 @@ def clean(paths: list[Path]) -> pd.DataFrame:
         "dropoff_zone":     df["DOLocationID"].astype("int32"),
         "requested_at":     df["tpep_pickup_datetime"].dt.strftime("%Y-%m-%dT%H:%M:%S"),
         "passenger_count":  df["passenger_count"].fillna(1).astype("int8"),
+        "trip_distance":    df["trip_distance"].fillna(0).astype("float32"),
+        "ratecode_id":      df["RatecodeID"].fillna(99).astype("int16"),
         "duration_seconds": duration.astype("float64"),
         "_ts":              df["tpep_pickup_datetime"],
     })
@@ -74,6 +83,7 @@ def clean(paths: list[Path]) -> pd.DataFrame:
         & (clean_df["duration_seconds"] <= 3 * 3600)
         & (clean_df["pickup_zone"].between(1, 265))
         & (clean_df["dropoff_zone"].between(1, 265))
+        & (clean_df["passenger_count"].between(0, 6))
         & (clean_df["_ts"].dt.year == 2023)
     )
     return clean_df.loc[mask].reset_index(drop=True)

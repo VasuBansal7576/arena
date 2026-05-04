@@ -8,11 +8,17 @@ All parquet files share the same columns.
 | `dropoff_zone` | int32 | NYC taxi zone ID (1–265) |
 | `requested_at` | string | ISO 8601 timestamp when the ride was requested |
 | `passenger_count` | int8 | Number of passengers |
+| `trip_distance` | float32 | TLC recorded miles; retained for training-derived distance/speed priors only |
+| `ratecode_id` | int16 | TLC fare regime; retained for training-derived airport/negotiated-fare priors only |
 | `duration_seconds` | float64 | Trip duration — **this is the target you predict** |
 
-At inference time the grader sends you the first four columns only. Your
+At inference time the grader sends you the first four request columns only. Your
 `predict(request: dict) -> float` function returns predicted
 `duration_seconds`.
+
+`trip_distance` and `ratecode_id` are not available to `predict()`. They are
+kept in the local training parquet so a submission can precompute compact
+historical priors from 2023 data and ship those priors inside `model.pkl`.
 
 ## Zone metadata (optional but useful)
 
@@ -37,6 +43,9 @@ road-network routing, and neighborhood embeddings.
   Central Park / JFK / LGA if you want to join them yourself:
   https://www.ncei.noaa.gov/access/services/data/v1
 - **Fare / tip / tolls**: irrelevant for duration prediction.
+- **Rate code**: not available at request time. It is fair to use it offline to
+  build historical route/fare-regime priors, but not as a direct inference
+  feature.
 
 ## Cleaning applied before you see the data
 

@@ -1,51 +1,53 @@
-"""Submission interface — this is what Gobblecube's grader imports.
+"""Submission interface for the Gobblecube ETA Challenge.
 
-The grader will call `predict` once per held-out request. The signature below
-is fixed; everything else (model type, preprocessing, etc.) is yours to change.
+The grader imports this module and calls predict(request) row-by-row. All
+state needed at inference lives in model.pkl; no network or data files are
+required inside the container.
 """
 
 from __future__ import annotations
 
 import pickle
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 
-_MODEL_PATH = Path(__file__).parent / "model.pkl"
+from features import build_single_features
 
-with open(_MODEL_PATH, "rb") as _f:
-    _MODEL = pickle.load(_f)
-# Disable xgboost's feature-name validation so we can predict on a bare
-# numpy array (skips per-call DataFrame construction overhead).
-if hasattr(_MODEL, "get_booster"):
-    _MODEL.get_booster().feature_names = None
+MODEL_PATH = Path(__file__).parent / "model.pkl"
 
-# Feature order must match baseline.py:
-#   pickup_zone, dropoff_zone, hour, dow, month, passenger_count
+_BUNDLE = None
+
+
+def _load_bundle() -> dict:
+    global _BUNDLE
+    if _BUNDLE is None:
+        with open(MODEL_PATH, "rb") as f:
+            _BUNDLE = pickle.load(f)
+    return _BUNDLE
+
+
+def _predict_with_bundle(request: dict, bundle: dict) -> float:
+    artifacts = bundle["artifacts"]
+    x = build_single_features(request, artifacts).reshape(1, -1)
+
+    model_pred = float(bundle["model"].predict(x)[0])
+    prior_idx = artifacts["feature_index"]["pair_hour_prior_duration"]
+    prior_pred = float(x[0, prior_idx])
+    blend = float(bundle.get("blend_weight", 1.0))
+    pred = blend * model_pred + (1.0 - blend) * prior_pred
+
+    same_idx = artifacts["feature_index"]["same_zone"]
+    if x[0, same_idx] > 0.5 and bundle.get("same_zone_model") is not None:
+        same_pred = float(bundle["same_zone_model"].predict(x)[0])
+        same_blend = float(bundle.get("same_zone_blend_weight", 1.0))
+        pred = same_blend * same_pred + (1.0 - same_blend) * prior_pred
+
+    if not np.isfinite(pred):
+        pred = float(artifacts["global_median_duration"])
+    return float(max(30.0, min(pred, 3.0 * 3600.0)))
 
 
 def predict(request: dict) -> float:
-    """Predict trip duration in seconds.
-
-    Input schema:
-        {
-            "pickup_zone":     int,   # NYC taxi zone, 1-265
-            "dropoff_zone":    int,
-            "requested_at":    str,   # ISO 8601 datetime
-            "passenger_count": int,
-        }
-    """
-    ts = datetime.fromisoformat(request["requested_at"])
-    x = np.array(
-        [[
-            int(request["pickup_zone"]),
-            int(request["dropoff_zone"]),
-            ts.hour,
-            ts.weekday(),
-            ts.month,
-            int(request["passenger_count"]),
-        ]],
-        dtype=np.int32,
-    )
-    return float(_MODEL.predict(x)[0])
+    """Predict trip duration in seconds."""
+    return _predict_with_bundle(request, _load_bundle())
