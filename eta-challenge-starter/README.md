@@ -242,6 +242,6 @@ Only public NYC TLC data is used:
 
 No external API calls are made at inference time.
 
-Total active build time: about one focused work session.
-
-*Submit your repo URL and LinkedIn profile to agentic-hiring@gobblecube.ai. Questions welcome at the same address.*
+Total active build time: about one focused work session. Per the updated
+take-home instructions, the final submission email should include both the repo
+URL and LinkedIn profile.
