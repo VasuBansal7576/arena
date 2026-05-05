@@ -17,9 +17,9 @@ by `predict.py` is stored in `model.pkl`.
 
 ## Final Dev Score
 
-- `python grade.py` 50k Dev sample MAE: **253.3 seconds**
-- Full local Dev MAE from `train.py`: **250.8 seconds**
-- Docker image size: **966MB**
+- Full local Dev MAE from `train.py`: **244.1 seconds**
+- Late time-holdout MAE (`requested_at >= 2023-12-25`): **252.7 seconds**
+- Docker image size: **992MB**
 
 Starter reference from the challenge README: naive GBT baseline is about
 `351s` Dev / `367s` Eval, and a simple zone-pair lookup is about `300s` Dev.
@@ -54,6 +54,10 @@ Main pieces:
   zone shapefile.
 - **Recency weighting:** late-2023 rows receive more weight than early-2023
   rows, while older rows still help rare routes.
+- **MAE-aware affine calibration:** after the model path is selected, small
+  route/hour/day/dropoff and higher-resolution interaction adjustments are
+  fitted on the pre-holdout Dev slice and kept only when they also improve the
+  later time-holdout.
 - **Target cleaning tested, not assumed:** p99.5 route-class winsorization was
   implemented and tested; the final model keeps the raw cleaned target because
   the no-cap experiment won Dev MAE.
@@ -61,9 +65,9 @@ Main pieces:
   deliberately excluded from model features because it is driver-entered and
   default-heavy.
 
-The final prediction uses the squared-error model directly, except same-zone
-trips where the dedicated same-zone model is lightly blended with the
-zone-pair-hour prior. Blend weights are selected on Dev.
+The final prediction uses the squared-error model, a lightly blended same-zone
+path, a pruned Manhattan-to/from-outer specialist, and the metric-aware affine
+calibration rules selected by the AutoResearch loop.
 
 ## Ablations
 
@@ -78,9 +82,20 @@ Measured on full local Dev inside `train.py`:
 | 1M-row quantile control | 252.1s |
 | 1M-row squared-error | 251.5s |
 | 1M-row squared-error, no target cap | 251.2s |
-| Final 1M-row squared-error, no target cap, 340 iters | **250.8s** |
+| 1M-row squared-error, no target cap, 340 iters | 250.8s |
+| Same final setup, 60-day recency half-life | 251.9s |
+| Same final setup, 120-day recency half-life | 252.1s |
+| 1M-row squared-error, no cap, 420 iters, lr 0.045 | 250.3s |
+| 1M-row squared-error, no cap, 500 iters, lr 0.04 | 250.3s |
+| Route-class specialists, unpruned | 250.1s full Dev, rejected by time-holdout |
+| Pruned route-class specialist | 250.3s (`250.27s`) |
+| Target-encoded pair means | 250.3s full Dev, rejected by time-holdout |
+| Duration variance features | 250.8s, rejected |
+| Affine-calibrated route model | 245.5s |
+| Final fine affine-calibrated route model | **244.1s** |
 
-The metric-driven loop is in `autoresearch.py`, with results in
+The AutoResearch-inspired loop is described in `program.md` and implemented as
+the metric-gated harness in `autoresearch.py`, with results in
 `research_log.csv` and per-run JSON files in `research_runs/`. A larger 2M-row
 variant and a 6M-row earlier run both scored worse than the final 1M-row model,
 so the smaller model is intentional.
@@ -91,14 +106,14 @@ Segmented MAE from the selected model:
 
 | Segment | MAE |
 |---|---:|
-| Overall | 250.8s |
-| Same-zone | 209.1s |
-| Manhattan internal | 216.3s |
-| Airport route | 428.5s |
-| Manhattan to/from outer borough | 405.9s |
-| Outer-to-outer | 537.4s |
-| Rush hour | 264.8s |
-| Late night | 194.9s |
+| Overall | 244.1s |
+| Same-zone | 209.0s |
+| Manhattan internal | 211.8s |
+| Airport route | 402.6s |
+| Manhattan to/from outer borough | 398.4s |
+| Outer-to-outer | 534.9s |
+| Rush hour | 257.3s |
+| Late night | 190.5s |
 
 Residual analysis shows remaining error is concentrated in afternoon peak
 hours, airport routes, outer-borough routes, and dropoffs into zone `265`
@@ -114,6 +129,21 @@ blindly adding more global features.
   sensible but empirically wrong here. Squared-error scored better once the
   target, priors, and features were in place.
 - p99.5 target winsorization also lost to training on the raw cleaned target.
+- Recency half-life sweeps at 60 and 120 days both lost to the final 90-day
+  setting, so the current weighting is not just a default left untouched.
+- Unpruned route-class specialist models improved full Dev to 250.1s but
+  worsened the later time-holdout, so I rejected that headline number. A pruned
+  version kept only the Manhattan-to/from-outer specialist, improving both full
+  Dev and the later holdout, and that is the shipped model.
+- Target-encoded pair means and duration variance features were also tested.
+  Both made temporal robustness worse, so they are kept in the research trail
+  but disabled for the shipped model.
+- Median residual tables were a sensible first calibration attempt, but every
+  alpha was selected as zero. The successful version was affine segment
+  calibration, which can correct scale and offset together.
+- Fine affine calibration improved further, but it is the most Dev-sensitive
+  piece of the submission. I kept it because it also improved the later
+  time-holdout, not only the tuning slice.
 - A pure distance/speed physics prior was not enough by itself. Observed
   distance is useful as a feature, but route duration still needs historical
   priors and a flexible model.
@@ -123,11 +153,16 @@ blindly adding more global features.
 ## AI Tooling
 
 I used Codex as an implementation partner for repo reading, feature-pipeline
-construction, verification, and the ablation loop. The useful loop was:
-propose one modeling change, encode it in `train.py`, run `autoresearch.py`,
-compare Dev MAE, and promote only if the metric improved. The loop overturned
-two plausible assumptions: quantile loss and winsorization both sounded right,
-but squared-error with no target cap scored better.
+construction, verification, and the ablation loop. The useful loop was inspired
+by Karpathy's AutoResearch pattern: write the research brief in `program.md`,
+propose one modeling change, encode it in `train.py` or feature code, run
+`autoresearch_agent.py`, compare Dev MAE, and promote only if the metric
+improved. `autoresearch_agent.py` is the program-driven loop; `autoresearch.py`
+is the lower-level experiment runner and promotion gate.
+The loop overturned two plausible assumptions: quantile loss and winsorization
+both sounded right, but squared-error with no target cap scored better. The
+largest late-stage gain came from changing the search space from feature
+stacking to MAE-aware calibration.
 
 ## Reproduce
 
@@ -141,11 +176,21 @@ python data/download_data.py
 
 # Reproduce the final promoted model.pkl and metrics.json.
 python train.py \
-  --experiment-name squared_error_no_cap_1m_340 \
+  --experiment-name fine_affine_calibration_route_pruned_1m_500_lr04 \
   --sample-n 1000000 \
-  --max-iter 340 \
+  --max-iter 500 \
+  --learning-rate 0.04 \
   --loss squared_error \
-  --target-cap-quantile 1.0
+  --target-cap-quantile 1.0 \
+  --disable-feature-group target_encoding \
+  --disable-feature-group variance \
+  --route-class-models \
+  --route-class-holdout-prune \
+  --route-class-max-iter 260 \
+  --route-class-sample-n 400000 \
+  --affine-calibration \
+  --fine-affine-calibration \
+  --calibration-holdout-prune
 
 # Optional: rerun the recorded ablation loop.
 python autoresearch.py --promote

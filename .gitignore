@@ -11,6 +11,11 @@ crossing-challenge-grader/
 mock_submission/
 mock_eta/
 
+# Unchosen starter artifacts. The ETA submission keeps its final model tracked,
+# but Crossing data/model files are not part of this submission.
+crossing-challenge-starter/data/*.parquet
+crossing-challenge-starter/model.pkl
+
 # --- Standard cruft ---
 .DS_Store
 __pycache__/

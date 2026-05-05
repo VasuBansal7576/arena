@@ -1,58 +1,55 @@
-# Gobblecube AI Builder Take-Home
+# Gobblecube ETA Challenge Submission
 
-We're hiring **AI Builders**: engineers who pick up unfamiliar problems,
-figure them out with whatever tools help, and ship something that works.
-Pick one of the two challenges below, build a working Dockerized
-submission, and send us the repo link when it's something you'd put
-your name on.
+This repo is my submission for the **Gobblecube AI Builder Take-Home**. I chose
+the **ETA Challenge**: predict NYC taxi trip duration in seconds from the
+grader request fields.
 
-## The two challenges
+The submission lives in [`eta-challenge-starter/`](./eta-challenge-starter/).
 
-- **[The ETA Challenge](./eta-challenge-starter/):** ride-hailing ETA
-  prediction on public NYC taxi data. Regress a single number: trip
-  duration in seconds. Scored on MAE against a held-out 2024 slice.
-  The repo baseline lands at ~367 s there.
-- **[The Crossing Challenge](./crossing-challenge-starter/):** pedestrian
-  crossing-intent + 2-second trajectory for a slow-speed autonomous
-  delivery vehicle. Scored on a joint BCE + pixel-ADE composite, each
-  term normalized so "do nothing" = 1.0. The repo baseline lands at
-  0.74 there.
+## Result
 
-Pick **one**. One submission per candidate.
+- Full local Dev from `train.py`: **244.1s MAE**
+- Late time-holdout MAE (`requested_at >= 2023-12-25`): **252.7s**
+- Challenge baseline reference: about **367s Eval MAE**
+- Docker image: builds and runs with no network access at inference time
 
-## How grading works
+## Submission Files
 
-The two challenges have **separate leaderboards**. You are not ranked
-against candidates who picked the other one. A strong Crossing submission
-and a strong ETA submission are treated as equivalent signal for the role.
+- [`eta-challenge-starter/predict.py`](./eta-challenge-starter/predict.py):
+  grader entry point, `predict(request: dict) -> float`
+- [`eta-challenge-starter/Dockerfile`](./eta-challenge-starter/Dockerfile):
+  Dockerized grader path
+- [`eta-challenge-starter/model.pkl`](./eta-challenge-starter/model.pkl):
+  trained model bundle
+- [`eta-challenge-starter/README.md`](./eta-challenge-starter/README.md):
+  modeling approach, ablations, diagnostics, and reproduction steps
+- [`eta-challenge-starter/AGENTS.md`](./eta-challenge-starter/AGENTS.md):
+  agent constraints and submission notes
+- [`eta-challenge-starter/program.md`](./eta-challenge-starter/program.md):
+  AutoResearch-inspired experiment brief
 
-Each starter README explains what its scoring harness does. Beat the
-baseline by as much as you can; we'll tell you how it stacks up.
+## Quick Verify
 
-## Same rules either way
+```bash
+cd eta-challenge-starter
+python -m pytest tests/
+python grade.py
 
-- Submit a **public GitHub repo** containing `predict.py`, a `Dockerfile`,
-  your trained weights, and a README. Details and constraints (image size,
-  runtime limits, disqualifiers) live in each starter's README. Read the
-  one you pick carefully.
-- Use whatever AI tooling helps you ship. Claude Code is our in-house
-  favourite, but Codex, Cursor, Copilot, plain-API integrations, or no LLM at all are
-  fine. We're scoring the submission, not the toolchain. Your git
-  history is part of what we look at.
-- No external API calls at inference time, no collaborators, no training on
-  the Eval set.
-- Include the Claude.md/Agents.md and relevant markdown files with the submission
+docker build -t gobblecube-eta-submission .
+docker run --rm --network=none -v $(pwd)/data:/work \
+  gobblecube-eta-submission /work/dev.parquet /work/preds.csv
+```
 
-## What we actually care about
+## What I Tried
 
-A clean submission with an honest README will beat a slightly better score
-with no write-up. We read three things, roughly in this order:
+The final model uses offline NYC taxi priors, cyclical time features,
+route-class structure, demand-density proxies, geographic borrowing, recency
+weighting, a dedicated same-zone path, and a metric-aware affine calibration
+layer. The ablation loop overturned two reasonable assumptions:
+quantile/absolute loss and target capping both sounded metric-aligned, but
+squared-error with no target cap scored better on Dev. The final improvement
+came from thinking directly about MAE calibration rather than adding more
+generic features.
 
-1. **Do you ship?** The number on the leaderboard.
-2. **Can you learn fast?** Your git log shows the trajectory. First
-   commits rarely look like final ones.
-3. **Can you reason about a problem that wasn't handed to you as a spec?**
-   Your README explains what you tried, what failed, and what the next
-   experiment would be if you kept going.
-
-Submit your repo URL to agentic-hiring@gobblecube.ai.
+The unselected `crossing-challenge-starter/` is the original alternate starter
+from the take-home. This submission is the ETA challenge only.

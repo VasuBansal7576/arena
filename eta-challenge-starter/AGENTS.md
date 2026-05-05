@@ -23,3 +23,5 @@ Implementation notes:
   that local pickle.
 - `metrics.json` records the latest Dev score, ablations, segmented MAE, and
   residual diagnostics after training.
+- `program.md` is the AutoResearch-inspired research brief: one hypothesis,
+  one measured run, promote only if full Dev MAE improves.

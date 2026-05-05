@@ -50,6 +50,38 @@ and changed means the AutoResearch loop found a better variant than the plan.
 |---|---|---|
 | Metric-driven experiment loop | Implemented after audit | `autoresearch.py` runs named experiments, parses `dev_mae`, writes `research_log.csv`, and promotes only better artifacts. |
 | One experiment per meaningful change | Partial | Experiments are logged in a ledger. I did not create one git commit per experiment because several runs were intentionally grouped, but the ledger preserves the trajectory. |
-| Keep only if better | Implemented | Promoted `baseline_1m`, `squared_error_1m`, `squared_error_no_cap_1m`, and `squared_error_no_cap_1m_340`. |
+| Keep only if better | Implemented | Promoted only when full Dev and the late time-holdout improved after the holdout gate was added. Rejected target encoding, variance features, and median residual tables despite plausible hypotheses. |
 
-Final promoted experiment: `squared_error_no_cap_1m_340`.
+Final promoted experiment: `fine_affine_calibration_route_pruned_1m_500_lr04`.
+
+Follow-up AutoResearch pass on 2026-05-05 tested 60-day and 120-day recency
+half-lives against the final setup. Both were worse than the promoted 90-day
+model, so no artifact was promoted.
+
+A second AutoResearch pass exposed sample seed and tree hyperparameters to the
+runner. The slower 500-iteration, 0.04-learning-rate model improved full Dev MAE
+from 250.8 to 250.3 and was promoted.
+
+Route-class specialist models were implemented and tested. They improved full
+Dev MAE to 250.1, but worsened the later time-holdout from 259.10 to 259.18, so
+the holdout gate rejected them for the final shipped model.
+
+A pruned specialist pass kept only route classes whose specialist blend also
+improved the later time-holdout. That retained the Manhattan-to/from-outer
+specialist at a 0.2 blend, improved full Dev MAE to 250.27, and improved the
+holdout from 259.10 to 259.07, so it was promoted.
+
+Target-encoding and duration-variance follow-ups were tested after that. Both
+worsened the late time-holdout, so they remain documented as rejected
+experiments instead of being blended into the shipped model.
+
+The final AutoResearch pass switched from feature stacking to metric-aware
+post-model calibration. Median residual tables selected zero weight everywhere,
+but affine route/hour/day/dropoff calibration improved full Dev MAE from 250.27
+to 245.50 and the late time-holdout from 259.07 to 253.72, so it was promoted.
+
+A final fine-calibration pass added higher-resolution route-hour, day-hour,
+dropoff-hour, airport-hour, and route-dropoff interactions. It improved full Dev
+MAE again to 244.13 and the late time-holdout to 252.74. This is the most
+overfit-sensitive layer, so it is documented explicitly rather than hidden as a
+generic model gain.

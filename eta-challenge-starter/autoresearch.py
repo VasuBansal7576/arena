@@ -63,6 +63,282 @@ DEFAULT_EXPERIMENTS = [
         ["--sample-n", "1000000", "--max-iter", "340", "--loss", "squared_error", "--target-cap-quantile", "1.0"],
     ),
     Experiment(
+        "squared_error_no_cap_1m_340_hl60",
+        [
+            "--sample-n",
+            "1000000",
+            "--max-iter",
+            "340",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+            "--recency-half-life-days",
+            "60",
+        ],
+    ),
+    Experiment(
+        "squared_error_no_cap_1m_340_hl120",
+        [
+            "--sample-n",
+            "1000000",
+            "--max-iter",
+            "340",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+            "--recency-half-life-days",
+            "120",
+        ],
+    ),
+    Experiment(
+        "squared_error_no_cap_1m_340_seed7",
+        [
+            "--sample-n",
+            "1000000",
+            "--sample-seed",
+            "7",
+            "--max-iter",
+            "340",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+        ],
+    ),
+    Experiment(
+        "squared_error_no_cap_1m_420_lr045",
+        [
+            "--sample-n",
+            "1000000",
+            "--max-iter",
+            "420",
+            "--learning-rate",
+            "0.045",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+        ],
+    ),
+    Experiment(
+        "squared_error_no_cap_1m_420_leaf95",
+        [
+            "--sample-n",
+            "1000000",
+            "--max-iter",
+            "420",
+            "--max-leaf-nodes",
+            "95",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+        ],
+    ),
+    Experiment(
+        "squared_error_no_cap_1m_500_lr04",
+        [
+            "--sample-n",
+            "1000000",
+            "--max-iter",
+            "500",
+            "--learning-rate",
+            "0.04",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+        ],
+    ),
+    Experiment(
+        "squared_error_no_cap_1500k_420_lr045",
+        [
+            "--sample-n",
+            "1500000",
+            "--max-iter",
+            "420",
+            "--learning-rate",
+            "0.045",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+        ],
+    ),
+    Experiment(
+        "route_class_specialists_1m_500_lr04",
+        [
+            "--sample-n",
+            "1000000",
+            "--max-iter",
+            "500",
+            "--learning-rate",
+            "0.04",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+            "--disable-feature-group",
+            "target_encoding",
+            "--disable-feature-group",
+            "variance",
+            "--route-class-models",
+            "--route-class-max-iter",
+            "260",
+            "--route-class-sample-n",
+            "400000",
+        ],
+    ),
+    Experiment(
+        "route_class_specialists_pruned_1m_500_lr04",
+        [
+            "--sample-n",
+            "1000000",
+            "--max-iter",
+            "500",
+            "--learning-rate",
+            "0.04",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+            "--disable-feature-group",
+            "target_encoding",
+            "--disable-feature-group",
+            "variance",
+            "--route-class-models",
+            "--route-class-holdout-prune",
+            "--route-class-max-iter",
+            "260",
+            "--route-class-sample-n",
+            "400000",
+        ],
+    ),
+    Experiment(
+        "target_encoding_1m_500_lr04",
+        [
+            "--sample-n",
+            "1000000",
+            "--max-iter",
+            "500",
+            "--learning-rate",
+            "0.04",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+            "--disable-feature-group",
+            "variance",
+        ],
+    ),
+    Experiment(
+        "variance_route_class_pruned_1m_500_lr04",
+        [
+            "--sample-n",
+            "1000000",
+            "--max-iter",
+            "500",
+            "--learning-rate",
+            "0.04",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+            "--disable-feature-group",
+            "target_encoding",
+            "--route-class-models",
+            "--route-class-holdout-prune",
+            "--route-class-max-iter",
+            "260",
+            "--route-class-sample-n",
+            "400000",
+        ],
+    ),
+    Experiment(
+        "residual_calibration_route_pruned_1m_500_lr04",
+        [
+            "--sample-n",
+            "1000000",
+            "--max-iter",
+            "500",
+            "--learning-rate",
+            "0.04",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+            "--disable-feature-group",
+            "target_encoding",
+            "--disable-feature-group",
+            "variance",
+            "--route-class-models",
+            "--route-class-holdout-prune",
+            "--route-class-max-iter",
+            "260",
+            "--route-class-sample-n",
+            "400000",
+            "--residual-calibration",
+            "--calibration-holdout-prune",
+        ],
+    ),
+    Experiment(
+        "affine_calibration_route_pruned_1m_500_lr04",
+        [
+            "--sample-n",
+            "1000000",
+            "--max-iter",
+            "500",
+            "--learning-rate",
+            "0.04",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+            "--disable-feature-group",
+            "target_encoding",
+            "--disable-feature-group",
+            "variance",
+            "--route-class-models",
+            "--route-class-holdout-prune",
+            "--route-class-max-iter",
+            "260",
+            "--route-class-sample-n",
+            "400000",
+            "--affine-calibration",
+            "--calibration-holdout-prune",
+        ],
+    ),
+    Experiment(
+        "fine_affine_calibration_route_pruned_1m_500_lr04",
+        [
+            "--sample-n",
+            "1000000",
+            "--max-iter",
+            "500",
+            "--learning-rate",
+            "0.04",
+            "--loss",
+            "squared_error",
+            "--target-cap-quantile",
+            "1.0",
+            "--disable-feature-group",
+            "target_encoding",
+            "--disable-feature-group",
+            "variance",
+            "--route-class-models",
+            "--route-class-holdout-prune",
+            "--route-class-max-iter",
+            "260",
+            "--route-class-sample-n",
+            "400000",
+            "--affine-calibration",
+            "--fine-affine-calibration",
+            "--calibration-holdout-prune",
+        ],
+    ),
+    Experiment(
         "squared_error_no_cap_2m_260",
         ["--sample-n", "2000000", "--max-iter", "260", "--loss", "squared_error", "--target-cap-quantile", "1.0"],
     ),
@@ -76,6 +352,20 @@ def load_best_score() -> float:
         return float("inf")
     with open(BEST_METRICS_PATH) as f:
         return float(json.load(f)["dev_mae"])
+
+
+def load_best_holdout() -> float | None:
+    if not BEST_METRICS_PATH.exists():
+        return None
+    with open(BEST_METRICS_PATH) as f:
+        metrics = json.load(f)
+    holdout = metrics.get("time_holdout") or {}
+    if "holdout_mae" in holdout:
+        return float(holdout["holdout_mae"])
+    route_holdout = metrics.get("route_class_holdout") or {}
+    if "specialist_holdout_mae" in route_holdout:
+        return float(route_holdout["specialist_holdout_mae"])
+    return None
 
 
 def append_ledger(row: dict) -> None:
@@ -100,11 +390,23 @@ def append_ledger(row: dict) -> None:
         writer.writerow(row)
 
 
+def completed_experiments() -> set[str]:
+    if not LEDGER_PATH.exists():
+        return set()
+    with open(LEDGER_PATH, newline="") as f:
+        return {
+            row["experiment"]
+            for row in csv.DictReader(f)
+            if row.get("status") == "ok"
+        }
+
+
 def run_experiment(exp: Experiment, promote: bool) -> dict:
     RESEARCH_DIR.mkdir(exist_ok=True)
     model_path = RESEARCH_DIR / f"{exp.name}.pkl"
     metrics_path = RESEARCH_DIR / f"{exp.name}.json"
     best_before = load_best_score()
+    holdout_before = load_best_holdout()
     cmd = [
         sys.executable,
         "train.py",
@@ -125,11 +427,22 @@ def run_experiment(exp: Experiment, promote: bool) -> dict:
         with open(metrics_path) as f:
             metrics = json.load(f)
         dev_mae = float(metrics["dev_mae"])
-        promoted = bool(promote and dev_mae < best_before)
+        holdout = metrics.get("route_class_holdout") or {}
+        holdout_ok = True
+        if holdout:
+            base_holdout = float(holdout.get("base_holdout_mae", float("inf")))
+            specialist_holdout = float(holdout.get("specialist_holdout_mae", float("inf")))
+            holdout_ok = specialist_holdout <= base_holdout
+        time_holdout = metrics.get("time_holdout") or {}
+        if holdout_before is not None and time_holdout:
+            holdout_ok = holdout_ok and float(time_holdout["holdout_mae"]) <= holdout_before
+        promoted = bool(promote and dev_mae < best_before and holdout_ok)
         if promoted:
             shutil.copy2(model_path, BEST_MODEL_PATH)
             shutil.copy2(metrics_path, BEST_METRICS_PATH)
             print(f"PROMOTED {exp.name}: {dev_mae:.3f} < {best_before:.3f}")
+        elif promote and dev_mae < best_before and not holdout_ok:
+            print(f"rejected by holdout gate: {dev_mae:.3f} beats full Dev but worsens time holdout")
         else:
             print(f"kept current best: {dev_mae:.3f} vs {best_before:.3f}")
     except Exception:
@@ -162,6 +475,7 @@ def main() -> None:
         action="append",
         help="run only experiments whose names match this value; may be repeated",
     )
+    parser.add_argument("--rerun", action="store_true", help="rerun experiments already marked ok in the ledger")
     args = parser.parse_args()
 
     experiments = DEFAULT_EXPERIMENTS
@@ -171,6 +485,12 @@ def main() -> None:
         missing = names - {exp.name for exp in experiments}
         if missing:
             raise SystemExit(f"Unknown experiments: {sorted(missing)}")
+    if not args.rerun:
+        done = completed_experiments()
+        experiments = [exp for exp in experiments if exp.name not in done]
+        if not experiments:
+            print("No new experiments to run. Use --rerun to repeat completed experiments.")
+            return
 
     results = [run_experiment(exp, promote=args.promote) for exp in experiments]
     print("\nSummary")

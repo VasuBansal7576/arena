@@ -59,6 +59,12 @@ FEATURE_NAMES = [
     "route_class",
     "pair_prior_duration",
     "pair_hour_prior_duration",
+    "pair_mean_target_duration",
+    "pair_hour_mean_target_duration",
+    "pair_mean_residual",
+    "pair_hour_mean_residual",
+    "pair_duration_std",
+    "pair_hour_duration_std",
     "route_hour_duration",
     "cluster_hour_duration",
     "pickup_hour_duration",
@@ -248,6 +254,32 @@ def build_single_features(request: dict, artifacts: dict) -> np.ndarray:
         pair_prior,
         float(artifacts["pair_hour_shrink_k"]),
     )
+    pair_mean_target = _shrink(
+        float(artifacts.get("pair_mean_duration", artifacts["pair_median_duration"])[pz, dz]),
+        pair_count,
+        cluster_hour,
+        float(artifacts["pair_shrink_k"]),
+    )
+    pair_hour_mean_target = _shrink(
+        float(artifacts.get("pair_hour_mean_duration", artifacts["pair_hour_median_duration"])[pz, dz, hour]),
+        pair_hour_count,
+        pair_mean_target,
+        float(artifacts["pair_hour_shrink_k"]),
+    )
+    pair_mean_residual = pair_mean_target - pair_prior
+    pair_hour_mean_residual = pair_hour_mean_target - pair_hour_prior
+    pair_duration_std = _shrink(
+        float(artifacts.get("pair_duration_std", artifacts["pair_median_duration"])[pz, dz]),
+        pair_count,
+        float(artifacts.get("global_duration_std", artifacts["global_median_duration"])),
+        float(artifacts["pair_shrink_k"]),
+    )
+    pair_hour_duration_std = _shrink(
+        float(artifacts.get("pair_hour_duration_std", artifacts["pair_hour_median_duration"])[pz, dz, hour]),
+        pair_hour_count,
+        pair_duration_std,
+        float(artifacts["pair_hour_shrink_k"]),
+    )
 
     route_dist = _safe(artifacts["route_class_distance"][rclass], artifacts["global_distance_miles"])
     dist_prior = _shrink(
@@ -321,6 +353,12 @@ def build_single_features(request: dict, artifacts: dict) -> np.ndarray:
         float(rclass),
         pair_prior,
         pair_hour_prior,
+        pair_mean_target,
+        pair_hour_mean_target,
+        pair_mean_residual,
+        pair_hour_mean_residual,
+        pair_duration_std,
+        pair_hour_duration_std,
         route_hour,
         cluster_hour,
         pickup_hour,

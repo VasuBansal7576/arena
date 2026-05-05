@@ -79,6 +79,13 @@ FEATURE_GROUPS = {
         "route_class",
     ],
     "cluster": ["cluster_hour_duration"],
+    "target_encoding": [
+        "pair_mean_target_duration",
+        "pair_hour_mean_target_duration",
+        "pair_mean_residual",
+        "pair_hour_mean_residual",
+    ],
+    "variance": ["pair_duration_std", "pair_hour_duration_std"],
 }
 
 
@@ -264,12 +271,15 @@ def build_artifacts(train: pd.DataFrame, meta: dict) -> dict:
     print("Building priors and route structure...")
     train = valid_speed_frame(train)
     global_median = float(train["duration_seconds"].median())
+    global_std = float(train["duration_seconds"].std())
     global_distance = float(train["valid_distance"].median())
     global_speed = float(train["speed_mph"].median())
 
     pair = train.groupby(["pickup_zone", "dropoff_zone"], observed=True).agg(
         pair_count=("duration_seconds", "size"),
         pair_median_duration=("duration_seconds", "median"),
+        pair_mean_duration=("duration_seconds", "mean"),
+        pair_duration_std=("duration_seconds", "std"),
         pair_median_distance=("valid_distance", "median"),
         pair_median_speed=("speed_mph", "median"),
         prob_rate_jfk=("ratecode_id", lambda s: float((s == 2).mean())),
@@ -279,15 +289,21 @@ def build_artifacts(train: pd.DataFrame, meta: dict) -> dict:
     pair_hour = train.groupby(["pickup_zone", "dropoff_zone", "hour"], observed=True).agg(
         pair_hour_count=("duration_seconds", "size"),
         pair_hour_median_duration=("duration_seconds", "median"),
+        pair_hour_mean_duration=("duration_seconds", "mean"),
+        pair_hour_duration_std=("duration_seconds", "std"),
         pair_hour_median_speed=("speed_mph", "median"),
     ).reset_index()
 
     pair_count = fill_2d_count(pair, "pair_count")
     pair_median_duration = fill_2d_stat(pair, "pair_median_duration")
+    pair_mean_duration = fill_2d_stat(pair, "pair_mean_duration")
+    pair_duration_std = fill_2d_stat(pair, "pair_duration_std")
     pair_median_distance = fill_2d_stat(pair, "pair_median_distance")
     pair_median_speed = fill_2d_stat(pair, "pair_median_speed")
     pair_hour_count = fill_3d_count(pair_hour, "pair_hour_count")
     pair_hour_median_duration = fill_3d_stat(pair_hour, "pair_hour_median_duration")
+    pair_hour_mean_duration = fill_3d_stat(pair_hour, "pair_hour_mean_duration")
+    pair_hour_duration_std = fill_3d_stat(pair_hour, "pair_hour_duration_std")
     pair_hour_median_speed = fill_3d_stat(pair_hour, "pair_hour_median_speed")
 
     pair_rate_probs = np.zeros((266, 266, 3), dtype=np.float32)
@@ -340,16 +356,21 @@ def build_artifacts(train: pd.DataFrame, meta: dict) -> dict:
         "feature_names": FEATURE_NAMES,
         "feature_index": {name: i for i, name in enumerate(FEATURE_NAMES)},
         "global_median_duration": global_median,
+        "global_duration_std": global_std,
         "global_distance_miles": global_distance,
         "global_speed_mph": global_speed,
         "pair_shrink_k": PAIR_SHRINK_K,
         "pair_hour_shrink_k": PAIR_HOUR_SHRINK_K,
         "pair_count": pair_count,
         "pair_median_duration": pair_median_duration,
+        "pair_mean_duration": pair_mean_duration,
+        "pair_duration_std": pair_duration_std,
         "pair_median_distance": pair_median_distance,
         "pair_median_speed": pair_median_speed,
         "pair_hour_count": pair_hour_count,
         "pair_hour_median_duration": pair_hour_median_duration,
+        "pair_hour_mean_duration": pair_hour_mean_duration,
+        "pair_hour_duration_std": pair_hour_duration_std,
         "pair_hour_median_speed": pair_hour_median_speed,
         "pair_rate_probs": pair_rate_probs,
         "route_hour_duration": route_hour_duration,
@@ -460,6 +481,32 @@ def build_feature_frame(df: pd.DataFrame, artifacts: dict) -> pd.DataFrame:
         pair_prior,
         float(artifacts["pair_hour_shrink_k"]),
     )
+    pair_mean_target = shrink(
+        artifacts.get("pair_mean_duration", artifacts["pair_median_duration"])[pz, dz],
+        pair_count,
+        cluster_hour,
+        float(artifacts["pair_shrink_k"]),
+    )
+    pair_hour_mean_target = shrink(
+        artifacts.get("pair_hour_mean_duration", artifacts["pair_hour_median_duration"])[pz, dz, hour],
+        pair_hour_count,
+        pair_mean_target,
+        float(artifacts["pair_hour_shrink_k"]),
+    )
+    pair_mean_residual = pair_mean_target - pair_prior
+    pair_hour_mean_residual = pair_hour_mean_target - pair_hour_prior
+    pair_duration_std = shrink(
+        artifacts.get("pair_duration_std", artifacts["pair_median_duration"])[pz, dz],
+        pair_count,
+        np.full(len(df), float(artifacts.get("global_duration_std", global_median)), dtype=np.float32),
+        float(artifacts["pair_shrink_k"]),
+    )
+    pair_hour_duration_std = shrink(
+        artifacts.get("pair_hour_duration_std", artifacts["pair_hour_median_duration"])[pz, dz, hour],
+        pair_hour_count,
+        pair_duration_std,
+        float(artifacts["pair_hour_shrink_k"]),
+    )
 
     route_dist = artifacts["route_class_distance"][rclass]
     dist_prior = shrink(
@@ -533,6 +580,12 @@ def build_feature_frame(df: pd.DataFrame, artifacts: dict) -> pd.DataFrame:
         "route_class": rclass.astype(np.float32),
         "pair_prior_duration": pair_prior,
         "pair_hour_prior_duration": pair_hour_prior,
+        "pair_mean_target_duration": pair_mean_target,
+        "pair_hour_mean_target_duration": pair_hour_mean_target,
+        "pair_mean_residual": pair_mean_residual,
+        "pair_hour_mean_residual": pair_hour_mean_residual,
+        "pair_duration_std": pair_duration_std,
+        "pair_hour_duration_std": pair_hour_duration_std,
         "route_hour_duration": route_hour,
         "cluster_hour_duration": cluster_hour,
         "pickup_hour_duration": pickup_hour,
@@ -560,14 +613,18 @@ def train_model(
     weights: np.ndarray,
     max_iter: int,
     loss: str,
+    learning_rate: float,
+    max_leaf_nodes: int,
+    min_samples_leaf: int,
+    l2_regularization: float,
 ) -> HistGradientBoostingRegressor:
     kwargs = {
         "loss": loss,
         "max_iter": max_iter,
-        "learning_rate": 0.055,
-        "max_leaf_nodes": 63,
-        "min_samples_leaf": 80,
-        "l2_regularization": 0.02,
+        "learning_rate": learning_rate,
+        "max_leaf_nodes": max_leaf_nodes,
+        "min_samples_leaf": min_samples_leaf,
+        "l2_regularization": l2_regularization,
         "validation_fraction": None,
         "random_state": 42,
     }
@@ -620,6 +677,334 @@ def tune_blend(y: np.ndarray, model_pred: np.ndarray, prior_pred: np.ndarray) ->
     return best_w, best
 
 
+def train_route_class_models(
+    train: pd.DataFrame,
+    X_train: pd.DataFrame,
+    y_train: np.ndarray,
+    weights: np.ndarray,
+    rows: np.ndarray,
+    args: argparse.Namespace,
+) -> dict[int, HistGradientBoostingRegressor]:
+    models: dict[int, HistGradientBoostingRegressor] = {}
+    sampled_classes = train["route_class"].to_numpy(np.int8)[rows]
+    for cls in range(1, N_ROUTE_CLASSES):
+        cls_pos = np.where(sampled_classes == cls)[0]
+        if len(cls_pos) < args.route_class_min_rows:
+            print(f"Skipping route-class {cls}: only {len(cls_pos):,} sampled rows")
+            continue
+        if len(cls_pos) > args.route_class_sample_n:
+            cls_weights = weights[rows[cls_pos]]
+            keep = choose_training_rows(cls_weights, args.route_class_sample_n, seed=args.sample_seed + cls)
+            cls_pos = cls_pos[keep]
+        print(f"Training route-class {cls} specialist on {len(cls_pos):,} rows...")
+        models[cls] = train_model(
+            X_train.iloc[cls_pos].reset_index(drop=True),
+            y_train[rows[cls_pos]],
+            weights[rows[cls_pos]],
+            args.route_class_max_iter,
+            args.loss,
+            args.learning_rate,
+            args.max_leaf_nodes,
+            args.min_samples_leaf,
+            args.l2_regularization,
+        )
+    return models
+
+
+def apply_route_class_models(
+    route_class_models: dict[int, HistGradientBoostingRegressor],
+    X_dev_np: np.ndarray,
+    dev: pd.DataFrame,
+    y_dev: np.ndarray,
+    base_pred: np.ndarray,
+    tune_cutoff: str,
+    prune_holdout: bool,
+) -> tuple[np.ndarray, dict[int, float], dict[str, float]]:
+    if not route_class_models:
+        return base_pred, {}, {}
+
+    final = base_pred.copy()
+    blend_weights: dict[int, float] = {}
+    rclass = dev["route_class"].to_numpy(np.int8)
+    ts = pd.to_datetime(dev["requested_at"])
+    tune_mask = (ts < pd.Timestamp(tune_cutoff)).to_numpy()
+    holdout_mask = ~tune_mask
+    base_tune_mae = mae(y_dev[tune_mask], base_pred[tune_mask]) if tune_mask.any() else np.nan
+    base_holdout_mae = mae(y_dev[holdout_mask], base_pred[holdout_mask]) if holdout_mask.any() else np.nan
+
+    for cls, model in route_class_models.items():
+        cls_mask = rclass == cls
+        cls_tune = cls_mask & tune_mask
+        if cls_tune.sum() == 0:
+            blend_weights[cls] = 0.0
+            continue
+        spec_pred = model.predict(X_dev_np[cls_mask])
+        base_cls = base_pred[cls_mask]
+        spec_tune = model.predict(X_dev_np[cls_tune])
+        base_tune = base_pred[cls_tune]
+        best_w = 0.0
+        best = mae(y_dev[cls_tune], base_tune)
+        for w in np.linspace(0.0, 1.0, 21):
+            score = mae(y_dev[cls_tune], w * spec_tune + (1.0 - w) * base_tune)
+            if score < best:
+                best = score
+                best_w = float(w)
+        cls_holdout = cls_mask & holdout_mask
+        if prune_holdout and cls_holdout.sum() > 0 and best_w > 0:
+            spec_holdout = model.predict(X_dev_np[cls_holdout])
+            base_holdout = base_pred[cls_holdout]
+            holdout_pred = best_w * spec_holdout + (1.0 - best_w) * base_holdout
+            if mae(y_dev[cls_holdout], holdout_pred) > mae(y_dev[cls_holdout], base_holdout):
+                best_w = 0.0
+        blend_weights[cls] = best_w
+        final[cls_mask] = best_w * spec_pred + (1.0 - best_w) * base_cls
+
+    holdout = {
+        "tune_cutoff": tune_cutoff,
+        "base_tune_mae": float(base_tune_mae),
+        "specialist_tune_mae": mae(y_dev[tune_mask], final[tune_mask]) if tune_mask.any() else np.nan,
+        "base_holdout_mae": float(base_holdout_mae),
+        "specialist_holdout_mae": mae(y_dev[holdout_mask], final[holdout_mask]) if holdout_mask.any() else np.nan,
+    }
+    return final, blend_weights, holdout
+
+
+def _median_residual_table(keys: list[np.ndarray], residual: np.ndarray, parent: np.ndarray, min_count: int, shrink_k: float, clip: float) -> np.ndarray:
+    shape = tuple(int(k.max()) + 1 for k in keys)
+    table = np.full(shape, np.nan, dtype=np.float32)
+    counts = np.zeros(shape, dtype=np.float32)
+    flat_key = np.ravel_multi_index([k.astype(np.int64) for k in keys], shape)
+    df = pd.DataFrame({"key": flat_key, "residual": residual})
+    grouped = df.groupby("key")["residual"].agg(["median", "count"]).reset_index()
+    parent_flat = parent.reshape(-1)
+    table_flat = table.reshape(-1)
+    counts_flat = counts.reshape(-1)
+    for row in grouped.itertuples(index=False):
+        idx = int(row.key)
+        count = float(row.count)
+        counts_flat[idx] = count
+        if count >= min_count:
+            raw = float(np.clip(row.median, -clip, clip))
+            table_flat[idx] = (count * raw + shrink_k * float(parent_flat[idx])) / (count + shrink_k)
+    return np.nan_to_num(table, nan=0.0)
+
+
+def fit_residual_calibration(dev: pd.DataFrame, y: np.ndarray, pred: np.ndarray, cutoff: str, prune_holdout: bool) -> tuple[np.ndarray, dict, dict]:
+    ts = pd.to_datetime(dev["requested_at"])
+    tune_mask = (ts < pd.Timestamp(cutoff)).to_numpy()
+    holdout_mask = ~tune_mask
+    if not tune_mask.any() or not holdout_mask.any():
+        return pred, {}, {}
+
+    rclass = dev["route_class"].to_numpy(np.int8)
+    hour = dev["hour"].to_numpy(np.int8)
+    dow = dev["dow"].to_numpy(np.int8)
+    dropoff = dev["dropoff_zone"].to_numpy(np.int16)
+    pickup = dev["pickup_zone"].to_numpy(np.int16)
+    residual = (y - pred).astype(np.float32)
+
+    global_corr = float(np.clip(np.median(residual[tune_mask]), -120.0, 120.0))
+    route_parent = np.full(N_ROUTE_CLASSES, global_corr, dtype=np.float32)
+    route_corr = _median_residual_table(
+        [rclass[tune_mask]],
+        residual[tune_mask],
+        route_parent,
+        min_count=2000,
+        shrink_k=8000.0,
+        clip=180.0,
+    )
+    route_hour_parent = np.repeat(route_corr[:, None], 24, axis=1)
+    route_hour_corr = _median_residual_table(
+        [rclass[tune_mask], hour[tune_mask]],
+        residual[tune_mask],
+        route_hour_parent,
+        min_count=1500,
+        shrink_k=5000.0,
+        clip=180.0,
+    )
+    dow_hour_parent = np.full((7, 24), global_corr, dtype=np.float32)
+    dow_hour_corr = _median_residual_table(
+        [dow[tune_mask], hour[tune_mask]],
+        residual[tune_mask],
+        dow_hour_parent,
+        min_count=1500,
+        shrink_k=5000.0,
+        clip=150.0,
+    )
+    dropoff_parent = np.full(266, global_corr, dtype=np.float32)
+    dropoff_corr = _median_residual_table(
+        [dropoff[tune_mask]],
+        residual[tune_mask],
+        dropoff_parent,
+        min_count=800,
+        shrink_k=4000.0,
+        clip=240.0,
+    )
+    pickup_parent = np.full(266, global_corr, dtype=np.float32)
+    pickup_corr = _median_residual_table(
+        [pickup[tune_mask]],
+        residual[tune_mask],
+        pickup_parent,
+        min_count=800,
+        shrink_k=4000.0,
+        clip=180.0,
+    )
+
+    candidates = [
+        ("global", np.full(len(dev), global_corr, dtype=np.float32), float(global_corr)),
+        ("route_class", route_corr[rclass], route_corr),
+        ("route_hour", route_hour_corr[rclass, hour], route_hour_corr),
+        ("dow_hour", dow_hour_corr[dow, hour], dow_hour_corr),
+        ("dropoff_zone", dropoff_corr[dropoff], dropoff_corr),
+        ("pickup_zone", pickup_corr[pickup], pickup_corr),
+    ]
+
+    calibrated = pred.copy()
+    accepted: dict[str, float] = {}
+    artifacts: dict[str, object] = {}
+    base_tune = mae(y[tune_mask], calibrated[tune_mask])
+    base_holdout = mae(y[holdout_mask], calibrated[holdout_mask])
+    for name, corr, payload in candidates:
+        best_alpha = 0.0
+        best_tune = base_tune
+        for alpha in np.linspace(0.0, 1.0, 21):
+            trial = np.maximum(30.0, np.minimum(calibrated + alpha * corr, 3.0 * 3600.0))
+            score = mae(y[tune_mask], trial[tune_mask])
+            if score < best_tune:
+                best_tune = score
+                best_alpha = float(alpha)
+        if best_alpha <= 0:
+            accepted[name] = 0.0
+            continue
+        trial = np.maximum(30.0, np.minimum(calibrated + best_alpha * corr, 3.0 * 3600.0))
+        holdout_score = mae(y[holdout_mask], trial[holdout_mask])
+        if prune_holdout and holdout_score > base_holdout:
+            accepted[name] = 0.0
+            continue
+        calibrated = trial
+        base_tune = best_tune
+        base_holdout = holdout_score
+        accepted[name] = best_alpha
+        artifacts[name] = payload
+
+    metrics = {
+        "tune_cutoff": cutoff,
+        "base_tune_mae": mae(y[tune_mask], pred[tune_mask]),
+        "calibrated_tune_mae": mae(y[tune_mask], calibrated[tune_mask]),
+        "base_holdout_mae": mae(y[holdout_mask], pred[holdout_mask]),
+        "calibrated_holdout_mae": mae(y[holdout_mask], calibrated[holdout_mask]),
+        "accepted_alphas": accepted,
+    }
+    calibration = {
+        "alphas": accepted,
+        "global": float(artifacts["global"]) if "global" in artifacts else 0.0,
+        "route_class": artifacts.get("route_class"),
+        "route_hour": artifacts.get("route_hour"),
+        "dow_hour": artifacts.get("dow_hour"),
+        "dropoff_zone": artifacts.get("dropoff_zone"),
+        "pickup_zone": artifacts.get("pickup_zone"),
+    }
+    return calibrated, calibration, metrics
+
+
+def fit_affine_calibration(
+    dev: pd.DataFrame,
+    y: np.ndarray,
+    pred: np.ndarray,
+    cutoff: str,
+    prune_holdout: bool,
+    fine: bool,
+) -> tuple[np.ndarray, list[dict], dict]:
+    ts = pd.to_datetime(dev["requested_at"])
+    tune_mask = (ts < pd.Timestamp(cutoff)).to_numpy()
+    holdout_mask = ~tune_mask
+    if not tune_mask.any() or not holdout_mask.any():
+        return pred, [], {}
+
+    candidates = [
+        ("route_class", dev["route_class"].to_numpy(np.int16), 2000),
+        ("hour", dev["hour"].to_numpy(np.int16), 10000),
+        ("dow", dev["dow"].to_numpy(np.int16), 10000),
+        ("dropoff_zone", dev["dropoff_zone"].to_numpy(np.int16), 1500),
+    ]
+    if fine:
+        rclass = dev["route_class"].to_numpy(np.int16)
+        hour = dev["hour"].to_numpy(np.int16)
+        dow = dev["dow"].to_numpy(np.int16)
+        dropoff = dev["dropoff_zone"].to_numpy(np.int16)
+        candidates.extend(
+            [
+                ("route_hour", rclass * 24 + hour, 3000),
+                ("dow_hour", dow * 24 + hour, 5000),
+                ("dropoff_hour", dropoff * 24 + hour, 2000),
+                ("airport_hour", (rclass == 1).astype(np.int16) * 24 + hour, 3000),
+                ("route_dropoff", rclass * 266 + dropoff, 1500),
+            ]
+        )
+    scales = np.linspace(0.94, 1.06, 13) if not fine else np.linspace(0.96, 1.04, 9)
+    offsets = np.linspace(-60.0, 60.0, 25) if not fine else np.linspace(-40.0, 40.0, 17)
+
+    calibrated = pred.copy()
+    base_full = mae(y, calibrated)
+    base_tune = mae(y[tune_mask], calibrated[tune_mask])
+    base_holdout = mae(y[holdout_mask], calibrated[holdout_mask])
+    rules: list[dict] = []
+    for feature, values, min_count in candidates:
+        for value in np.unique(values):
+            mask = values == value
+            if (mask & tune_mask).sum() < min_count:
+                continue
+            best_tune = base_tune
+            best_scale = 1.0
+            best_offset = 0.0
+            best_segment = None
+            for scale in scales:
+                for offset in offsets:
+                    segment = np.clip(calibrated[mask] * scale + offset, 30.0, 3.0 * 3600.0)
+                    old = calibrated[mask].copy()
+                    calibrated[mask] = segment
+                    tune_score = mae(y[tune_mask], calibrated[tune_mask])
+                    calibrated[mask] = old
+                    if tune_score < best_tune:
+                        best_tune = tune_score
+                        best_scale = float(scale)
+                        best_offset = float(offset)
+                        best_segment = segment
+            if best_segment is None:
+                continue
+            trial = calibrated.copy()
+            trial[mask] = best_segment
+            full_score = mae(y, trial)
+            holdout_score = mae(y[holdout_mask], trial[holdout_mask])
+            if full_score < base_full and (not prune_holdout or holdout_score <= base_holdout):
+                calibrated = trial
+                base_full = full_score
+                base_tune = best_tune
+                base_holdout = holdout_score
+                rules.append(
+                    {
+                        "feature": feature,
+                        "value": int(value),
+                        "scale": best_scale,
+                        "offset": best_offset,
+                        "tune_count": int((mask & tune_mask).sum()),
+                    }
+                )
+
+    metrics = {
+        "tune_cutoff": cutoff,
+        "base_full_mae": mae(y, pred),
+        "calibrated_full_mae": mae(y, calibrated),
+        "base_tune_mae": mae(y[tune_mask], pred[tune_mask]),
+        "calibrated_tune_mae": mae(y[tune_mask], calibrated[tune_mask]),
+        "base_holdout_mae": mae(y[holdout_mask], pred[holdout_mask]),
+        "calibrated_holdout_mae": mae(y[holdout_mask], calibrated[holdout_mask]),
+        "rule_count": len(rules),
+        "fine": fine,
+    }
+    return calibrated, rules, metrics
+
+
 def segment_table(dev: pd.DataFrame, y: np.ndarray, pred: np.ndarray) -> dict[str, float]:
     masks = {
         "overall": np.ones(len(dev), dtype=bool),
@@ -655,16 +1040,42 @@ def residual_summary(dev: pd.DataFrame, y: np.ndarray, pred: np.ndarray) -> dict
     return summary
 
 
+def time_holdout_table(dev: pd.DataFrame, y: np.ndarray, pred: np.ndarray, cutoff: str = "2023-12-25") -> dict:
+    ts = pd.to_datetime(dev["requested_at"])
+    tune_mask = (ts < pd.Timestamp(cutoff)).to_numpy()
+    holdout_mask = ~tune_mask
+    return {
+        "cutoff": cutoff,
+        "tune_mae": mae(y[tune_mask], pred[tune_mask]) if tune_mask.any() else np.nan,
+        "holdout_mae": mae(y[holdout_mask], pred[holdout_mask]) if holdout_mask.any() else np.nan,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sample-n", type=int, default=3_000_000)
+    parser.add_argument("--sample-seed", type=int, default=42)
     parser.add_argument("--max-iter", type=int, default=420)
+    parser.add_argument("--learning-rate", type=float, default=0.055)
+    parser.add_argument("--max-leaf-nodes", type=int, default=63)
+    parser.add_argument("--min-samples-leaf", type=int, default=80)
+    parser.add_argument("--l2-regularization", type=float, default=0.02)
     parser.add_argument("--loss", choices=["quantile", "squared_error", "absolute_error"], default="quantile")
     parser.add_argument("--target-cap-quantile", type=float, default=0.995)
     parser.add_argument("--recency-half-life-days", type=float, default=90.0)
     parser.add_argument("--recency-floor", type=float, default=0.30)
     parser.add_argument("--disable-feature-group", action="append", default=[])
     parser.add_argument("--no-same-zone-model", action="store_true")
+    parser.add_argument("--route-class-models", action="store_true")
+    parser.add_argument("--route-class-sample-n", type=int, default=600_000)
+    parser.add_argument("--route-class-min-rows", type=int, default=20_000)
+    parser.add_argument("--route-class-max-iter", type=int, default=320)
+    parser.add_argument("--route-class-tune-cutoff", default="2023-12-25")
+    parser.add_argument("--route-class-holdout-prune", action="store_true")
+    parser.add_argument("--residual-calibration", action="store_true")
+    parser.add_argument("--calibration-holdout-prune", action="store_true")
+    parser.add_argument("--affine-calibration", action="store_true")
+    parser.add_argument("--fine-affine-calibration", action="store_true")
     parser.add_argument("--experiment-name", default="final")
     parser.add_argument("--model-path", type=Path, default=MODEL_PATH)
     parser.add_argument("--metrics-path", type=Path, default=METRICS_PATH)
@@ -694,7 +1105,7 @@ def main() -> None:
     artifacts = build_artifacts(train, meta)
     artifacts["route_class_caps"] = caps
 
-    rows = choose_training_rows(weights, args.sample_n)
+    rows = choose_training_rows(weights, args.sample_n, seed=args.sample_seed)
     print("Featurizing sampled train rows and full dev...")
     X_train = build_feature_frame(train.iloc[rows].reset_index(drop=True), artifacts)
     X_dev = build_feature_frame(dev, artifacts)
@@ -703,7 +1114,17 @@ def main() -> None:
     y_dev = dev["duration_seconds"].to_numpy(np.float32)
 
     print(f"Training {args.loss} model on {len(rows):,} rows...")
-    model = train_model(X_train, y_train[rows], weights[rows], args.max_iter, args.loss)
+    model = train_model(
+        X_train,
+        y_train[rows],
+        weights[rows],
+        args.max_iter,
+        args.loss,
+        args.learning_rate,
+        args.max_leaf_nodes,
+        args.min_samples_leaf,
+        args.l2_regularization,
+    )
 
     same_model = None
     same_mask_train = (train["pickup_zone"].to_numpy() == train["dropoff_zone"].to_numpy())
@@ -716,7 +1137,17 @@ def main() -> None:
         print(f"Training same-zone model on {len(same_rows):,} rows...")
         X_same = build_feature_frame(train.iloc[same_rows].reset_index(drop=True), artifacts)
         X_same = disable_feature_groups(X_same, args.disable_feature_group)
-        same_model = train_model(X_same, y_train[same_rows], weights[same_rows], 260, args.loss)
+        same_model = train_model(
+            X_same,
+            y_train[same_rows],
+            weights[same_rows],
+            260,
+            args.loss,
+            args.learning_rate,
+            args.max_leaf_nodes,
+            args.min_samples_leaf,
+            args.l2_regularization,
+        )
 
     X_dev_np = X_dev.to_numpy(np.float32)
     model_pred = model.predict(X_dev_np)
@@ -732,6 +1163,42 @@ def main() -> None:
         same_blend_w, _ = tune_blend(y_dev[same_mask_dev], same_pred, same_prior)
         final_pred[same_mask_dev] = same_blend_w * same_pred + (1.0 - same_blend_w) * same_prior
 
+    route_class_models: dict[int, HistGradientBoostingRegressor] = {}
+    route_class_blend_weights: dict[int, float] = {}
+    route_class_holdout: dict[str, float] = {}
+    residual_calibration: dict = {}
+    residual_calibration_metrics: dict = {}
+    affine_calibration: list[dict] = []
+    affine_calibration_metrics: dict = {}
+    if args.route_class_models:
+        route_class_models = train_route_class_models(train, X_train, y_train, weights, rows, args)
+        final_pred, route_class_blend_weights, route_class_holdout = apply_route_class_models(
+            route_class_models,
+            X_dev_np,
+            dev,
+            y_dev,
+            final_pred,
+            args.route_class_tune_cutoff,
+            args.route_class_holdout_prune,
+        )
+    if args.residual_calibration:
+        final_pred, residual_calibration, residual_calibration_metrics = fit_residual_calibration(
+            dev,
+            y_dev,
+        final_pred,
+        args.route_class_tune_cutoff,
+        args.calibration_holdout_prune,
+    )
+    if args.affine_calibration:
+        final_pred, affine_calibration, affine_calibration_metrics = fit_affine_calibration(
+            dev,
+            y_dev,
+            final_pred,
+            args.route_class_tune_cutoff,
+            args.calibration_holdout_prune,
+            args.fine_affine_calibration,
+        )
+
     metrics = {
         "experiment_name": args.experiment_name,
         "dev_mae": mae(y_dev, final_pred),
@@ -741,16 +1208,30 @@ def main() -> None:
         "physics_mae": mae(y_dev, X_dev["physics_duration"].to_numpy(np.float32)),
         "blend_weight": blend_w,
         "same_zone_blend_weight": same_blend_w,
+        "route_class_blend_weights": route_class_blend_weights,
+        "route_class_holdout": route_class_holdout,
+        "residual_calibration": residual_calibration_metrics,
+        "affine_calibration": affine_calibration_metrics,
+        "time_holdout": time_holdout_table(dev, y_dev, final_pred, args.route_class_tune_cutoff),
         "segment_mae": segment_table(dev, y_dev, final_pred),
         "residual_summary": residual_summary(dev, y_dev, final_pred),
         "train_rows": int(len(train)),
         "model_train_rows": int(len(rows)),
+        "sample_seed": args.sample_seed,
         "loss": args.loss,
+        "max_iter": args.max_iter,
+        "learning_rate": args.learning_rate,
+        "max_leaf_nodes": args.max_leaf_nodes,
+        "min_samples_leaf": args.min_samples_leaf,
+        "l2_regularization": args.l2_regularization,
         "target_cap_quantile": args.target_cap_quantile,
         "recency_half_life_days": args.recency_half_life_days,
         "recency_floor": args.recency_floor,
         "disabled_feature_groups": args.disable_feature_group,
         "same_zone_model_enabled": same_model is not None,
+        "route_class_models_enabled": bool(route_class_models),
+        "residual_calibration_enabled": bool(residual_calibration),
+        "affine_calibration_enabled": bool(affine_calibration),
         "elapsed_seconds": round(time.time() - t0, 1),
     }
     print(json.dumps(metrics, indent=2))
@@ -758,8 +1239,12 @@ def main() -> None:
     bundle = {
         "model": model,
         "same_zone_model": same_model,
+        "route_class_models": route_class_models,
         "blend_weight": blend_w,
         "same_zone_blend_weight": same_blend_w,
+        "route_class_blend_weights": route_class_blend_weights,
+        "residual_calibration": residual_calibration,
+        "affine_calibration": affine_calibration,
         "artifacts": artifacts,
         "metrics": metrics,
     }
