@@ -99,9 +99,8 @@ docker run --rm --network=none -v $(pwd)/data:/work \
   gobblecube-eta-submission /work/dev.parquet /work/preds.csv
 ```
 
-## Notes
+## Scope
 
-Only the ETA challenge is submitted. The unselected
-[`crossing-challenge-starter/`](./crossing-challenge-starter/) remains from the
-original fork, but its tracked starter data/model artifacts were removed from
-this submission branch.
+This is an ETA-only submission. I left the alternate Crossing starter in the
+repo for context, but all shipped artifacts, scoring work, and write-up are in
+`eta-challenge-starter/`.
