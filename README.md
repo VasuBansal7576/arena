@@ -51,5 +51,14 @@ squared-error with no target cap scored better on Dev. The final improvement
 came from thinking directly about MAE calibration rather than adding more
 generic features.
 
+The research loop was inspired by Andrej Karpathy's AutoResearch framing:
+write a short research program, run one measurable experiment at a time, and
+promote only what improves the metric. That loop passed objective search,
+route-class pruning, and fine affine calibration; it rejected target encoding,
+duration variance, and median residual tables when they failed the
+time-holdout.
+
 The unselected `crossing-challenge-starter/` is the original alternate starter
 from the take-home. This submission is the ETA challenge only.
+
+Submit your repo URL and LinkedIn profile to agentic-hiring@gobblecube.ai.

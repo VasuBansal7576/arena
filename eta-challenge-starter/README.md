@@ -100,6 +100,33 @@ the metric-gated harness in `autoresearch.py`, with results in
 variant and a 6M-row earlier run both scored worse than the final 1M-row model,
 so the smaller model is intentional.
 
+## AutoResearch Loop
+
+I used an Andrej Karpathy-inspired AutoResearch loop: keep a written research
+program, propose one measurable change at a time, run it under a fixed local
+budget, and promote only when the metric improves. In this repo,
+`program.md` is the research brief, `autoresearch_agent.py` is the
+program-driven loop, and `autoresearch.py` is the deterministic promotion gate.
+
+The important part was not asking an LLM for more random features. The useful
+shift was changing the search space when the obvious path stalled:
+
+| AutoResearch step | Decision | Result / reason |
+|---|---|---|
+| Objective search: quantile, absolute-error, squared-error | Passed | Squared-error beat the seemingly MAE-aligned losses on this feature stack. |
+| Target-cap search | Passed | Removing p99.5 target capping improved Dev MAE. |
+| Longer 1M-row learner, lr 0.04 | Passed | Reduced underfit without needing a larger/slower training sample. |
+| Route-class specialists | Passed after pruning | Unpruned specialists overfit the time split; holdout pruning kept only the useful Manhattan-to/from-outer path. |
+| Target encoding and variance features | Rejected | Plausible feature ideas, but they worsened the late time-holdout. |
+| Median residual calibration | Rejected | Every correction alpha selected zero, suggesting the model was already close to additive median calibration. |
+| Fine affine calibration | Passed | The biggest late gain came from metric-aware route/hour/day/dropoff calibration, improving full Dev to 244.1s and the late holdout to 252.7s. |
+
+The tradeoff is honesty versus raw score chasing. The final affine calibration
+layer is deliberately transparent and small enough to inspect, but it is also
+the most Dev-sensitive part of the system. I kept it because it improved both
+the tuning slice and the later time-holdout; the next improvement would need a
+stronger nested time split before I would trust more calibration rules.
+
 ## Diagnostics
 
 Segmented MAE from the selected model:
@@ -216,3 +243,5 @@ Only public NYC TLC data is used:
 No external API calls are made at inference time.
 
 Total active build time: about one focused work session.
+
+*Submit your repo URL and LinkedIn profile to agentic-hiring@gobblecube.ai. Questions welcome at the same address.*
